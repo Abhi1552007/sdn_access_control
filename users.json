@@ -1,0 +1,5 @@
+{
+  "alice": {"salt": "dfdc58bad01c80d0", "password_sha256": "8878b7debd7ead1d20985645558cbf7d04ca26d4cbcec097afe9847e9d5864db", "role": "staff"},
+  "bob":   {"salt": "dc7f6c8b69abebca", "password_sha256": "add4ce484d6acbb34c1dc716d31e06e7947beee499a9eb20891a8ea3a19f4c7c", "role": "staff"},
+  "guest": {"salt": "928ee1cb2f6a2eaa", "password_sha256": "f764a9746ed2350295f1075758956b77f39423cb2e745c51a1659431587e5c57", "role": "guest"}
+}

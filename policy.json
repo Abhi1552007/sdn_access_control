@@ -1,0 +1,13 @@
+{
+  "_comment": "Allow/deny access policies. Roles map to the protected services they may reach.",
+  "protected_services": {
+    "fileserver": {"ip": "10.0.0.4", "port": 9000}
+  },
+  "role_allow": {
+    "staff": ["fileserver"],
+    "guest": []
+  },
+  "host_deny": ["10.0.0.5"],
+  "session_timeout_sec": 60,
+  "max_failed_attempts": 3
+}
