@@ -1,13 +1,16 @@
 {
-  "_comment": "Allow/deny access policies. Roles map to the protected services they may reach.",
-  "protected_services": {
-    "fileserver": {"ip": "10.0.0.4", "port": 9000}
+  "services": {
+    "fileserver": {"ip": "10.0.0.4", "ports": [9000, 5001]},
+    "dbserver":   {"ip": "10.0.0.6", "ports": [9100, 5001]}
   },
-  "role_allow": {
-    "staff": ["fileserver"],
-    "guest": []
+  "roles": {
+    "admin":      {"services": ["fileserver", "dbserver"], "rate_kbps": 0,    "hours": [0, 24], "admin": true},
+    "staff":      {"services": ["fileserver"],             "rate_kbps": 0,    "hours": [0, 24]},
+    "guest":      {"services": ["fileserver"],             "rate_kbps": 1000, "hours": [0, 24]},
+    "contractor": {"services": ["dbserver"],               "rate_kbps": 0,    "hours": [9, 18]}
   },
   "host_deny": ["10.0.0.5"],
   "session_timeout_sec": 60,
-  "max_failed_attempts": 3
+  "max_failed_attempts": 3,
+  "block_duration_sec": 20
 }

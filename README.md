@@ -1,83 +1,80 @@
 # SDN Authentication and Network Access Control
 
-Hosts must log in to a TCP authentication server before the network lets them
-reach a protected service. On a successful login the SDN controller installs an
-OpenFlow rule that opens the path; on logout or session timeout the rule is removed.
+Hosts must log in to a TCP authentication server before the network lets them reach
+protected services. An SDN controller (OpenFlow 1.3 on Open vSwitch, inside Mininet)
+grants, **restricts** (rate-limits) and revokes access dynamically, per user role.
 
-## Architecture
+## Network (D2)
 
 ```
-            +------------------- s1 (Open vSwitch, OpenFlow 1.3) -------------------+
-            |                                                                       |
-   h1 10.0.0.1          h2 10.0.0.2      h3 10.0.0.3      h4 10.0.0.4         h5 10.0.0.5
-   auth_server.py       client           client           protected_service   blacklisted
-   + sdn_controller.py  (alice)          (bob/guest)      :9000               host
-   :5000
+                         s1 (core)
+          h1 auth :5000   h4 fileserver :9000   h6 dbserver :9100
+                /                         \
+          s2 (dept A)                   s3 (dept B)
+    h2 alice  h3 guest  h7 admin     h5 blacklisted  h8 bob
 ```
 
-1. Client connects to h1:5000 over TCP and sends `login`.
-2. Server checks the salted SHA-256 password hash (`users.json`) and the policy (`policy.json`).
-3. If allowed, `sdn_controller.py` runs `ovs-ofctl add-flow` with a per-session cookie.
-4. Client sends heartbeats; if they stop for `session_timeout_sec`, the session expires.
-5. On logout or timeout the controller deletes every flow with that cookie.
-
-### Flow table priorities
-
-| Priority | Match | Action | Purpose |
+| Role | Services | Bandwidth | Hours |
 |---|---|---|---|
-| 310 | tcp from blacklisted host to auth server | normal | let it be refused politely |
-| 300 | ip from blacklisted host | drop | host deny policy |
-| 200 | tcp src=client dst=10.0.0.4:9000 (cookie per session) | normal | granted access |
-| 100 | ip dst=10.0.0.4 | drop | default deny for protected service |
-| 0 | any | normal | ordinary L2 forwarding |
+| admin | fileserver, dbserver + admin commands | full | any |
+| staff | fileserver | full | any |
+| guest | fileserver | 1 Mbit/s (OpenFlow meter) | any |
+| contractor | dbserver | full | 09:00–18:00 |
 
-## Files
+Users: `alice/alice123`, `bob/bob123` (staff), `guest/guest123`, `admin/admin123`, `carol/carol123` (contractor).
 
-| File | Role |
-|---|---|
-| `auth_server.py` | Multi-threaded TCP auth server, sessions, timeouts, lockout, logging |
-| `auth_client.py` | Client: login, heartbeat, logout, try the service |
-| `sdn_controller.py` | Installs/removes OpenFlow rules via `ovs-ofctl` |
-| `protected_service.py` | TCP service on h4 that logs every access |
-| `topology.py` | Builds the Mininet network, starts servers, runs tests |
-| `users.json` | Users with salted password hashes and roles |
-| `policy.json` | Allow/deny policies, timeout, lockout limit |
-| `logs/auth.log`, `logs/access.log` | Authentication and access logs |
-
-Demo users: `alice / alice123` (staff), `bob / bob123` (staff), `guest / guest123` (guest, no access).
-
-## Running
+## Run
 
 ```bash
-cd ~/sdn_auth
-sudo python3 topology.py --test     # runs all scenarios, then opens the Mininet CLI
-sudo python3 topology.py            # just the network + CLI
+sudo apt install -y mininet openvswitch-switch iperf python3-matplotlib
+git clone https://github.com/Abhi1552007/sdn_access_control.git
+cd sdn_access_control
+sudo mn -c
+sudo python3 topology.py --test      # 12 scenarios (~4 min), then the mininet> prompt
+sudo python3 topology.py --perf      # performance evaluation -> results/perf.json
+python3 plot_results.py              # graphs -> results/*.png, results/summary.md
 ```
 
-Useful CLI commands:
-
-```
-mininet> h2 python3 auth_client.py access
-mininet> h2 python3 auth_client.py login alice alice123 --hold 20
-mininet> h1 ovs-ofctl -O OpenFlow13 dump-flows s1
-mininet> h2 python3 auth_client.py status
-mininet> sh tail logs/auth.log
-```
-
-Session timeout demo (about 70 seconds):
-
-```
-mininet> h2 python3 auth_client.py login alice alice123 --no-heartbeat --hold 70
-```
-
-Note: lockouts last until the server restarts. Exit Mininet and run `topology.py` again to reset.
+If conda is active, run `conda deactivate` first. On a machine without the Open vSwitch
+kernel module, add `--userspace`.
 
 ## Test scenarios (`--test`)
 
-1. Unauthenticated access is blocked
-2. Wrong password rejected, access stays blocked
-3. Valid login grants access, logout revokes it
-4. Guest is authenticated but the policy denies the service
-5. Blacklisted host denied even with valid credentials
-6. Two users logged in concurrently, flow table shown
-7. Lockout after 3 failed attempts
+1. Default deny – no login, no access
+2. Staff gets fileserver but not dbserver
+3. Admin gets both
+4. Guest is rate-limited by an OpenFlow meter (iperf staff vs guest)
+5. IP spoofing is blocked (grants bind to switch port + MAC)
+6. Blacklisted host denied
+7. Time-based rule for contractors
+8. Brute force → host blocked on every switch for 20 s
+9. Admin kicks a user → access revoked at once
+10. Live policy reload changes access without restart
+11. Auth server crash → access survives, session restored on restart
+12. Four users at once, flow tables of all three switches
+
+## Useful commands at `mininet>` (use the full path of the folder)
+
+```
+h2 python3 PATH/auth_client.py login alice alice123 --service both --hold 20
+h7 python3 PATH/admin_client.py admin admin123 sessions
+h7 python3 PATH/admin_client.py admin admin123 flows
+h2 cd PATH && python3 auth_client.py login alice alice123 --no-heartbeat --hold 70   # timeout demo
+```
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `topology.py` | Mininet network, starts servers, test scenarios |
+| `sdn_controller.py` | OpenFlow rules on all switches: paths, anti-spoofing, meters, blocks |
+| `auth_server.py` | Multi-threaded TCP auth server: sessions, roles, admin, reload, crash recovery |
+| `perf_test.py`, `perf_client.py` | Performance measurements |
+| `auth_client.py` | Login / heartbeat / logout client |
+| `admin_client.py` | Admin commands |
+| `protected_service.py` | File and database services |
+| `add_user.py` | Add or remove users (salted SHA-256) |
+| `policy.json`, `users.json` | Policies and users |
+| `plot_results.py` | Graphs from the performance results |
+
+Logs: `logs/auth.log` (authentication and SDN events), `logs/access.log` (service access).

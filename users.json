@@ -1,5 +1,27 @@
 {
-  "alice": {"salt": "dfdc58bad01c80d0", "password_sha256": "8878b7debd7ead1d20985645558cbf7d04ca26d4cbcec097afe9847e9d5864db", "role": "staff"},
-  "bob":   {"salt": "dc7f6c8b69abebca", "password_sha256": "add4ce484d6acbb34c1dc716d31e06e7947beee499a9eb20891a8ea3a19f4c7c", "role": "staff"},
-  "guest": {"salt": "928ee1cb2f6a2eaa", "password_sha256": "f764a9746ed2350295f1075758956b77f39423cb2e745c51a1659431587e5c57", "role": "guest"}
+  "alice": {
+    "salt": "57ca53ca7c389765",
+    "password_sha256": "e59cccf7a7d4ded26dd52cab5aa64cd2c4840ae9ca182a7eccf982f57205a4d6",
+    "role": "staff"
+  },
+  "bob": {
+    "salt": "d32c87f2dc7f4729",
+    "password_sha256": "4522f2dcfe637fb8e78e45de8d9d7154cc8adde5186394ac02c6786bfac27452",
+    "role": "staff"
+  },
+  "guest": {
+    "salt": "74c0174c9fd08154",
+    "password_sha256": "0e5fb3c1e7284d391272f513637aee334cf85cf21afb5b679e1af47b77737531",
+    "role": "guest"
+  },
+  "admin": {
+    "salt": "51f394adfda32129",
+    "password_sha256": "47f15bd4aa486cc0d59d542ae0949ac1cf3da40431dce39ea1cc4f5ebc9baa6f",
+    "role": "admin"
+  },
+  "carol": {
+    "salt": "5bd8220c0f0edfd6",
+    "password_sha256": "4a1a8f04df65edd438d78dbe2d32f9609a9ee42272287db520b43691b059f6d3",
+    "role": "contractor"
+  }
 }

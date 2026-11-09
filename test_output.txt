@@ -1,0 +1,354 @@
+*** Creating network
+*** Adding hosts:
+h1 h2 h3 h4 h5 h6 h7 h8 
+*** Adding switches:
+s1 s2 s3 
+*** Adding links:
+(h1, s1) (h2, s2) (h3, s2) (h4, s1) (h5, s3) (h6, s1) (h7, s2) (h8, s3) (s2, s1) (s3, s1) 
+*** Configuring hosts
+h1 h2 h3 h4 h5 h6 h7 h8 
+*** Starting controller
+
+*** Starting 3 switches
+s1 s2 s3 ...
+*** Auth server on h1:5000, fileserver on h4:9000, dbserver on h6:9100
+--- s1 ---
+ priority=310,tcp,nw_src=10.0.0.5,nw_dst=10.0.0.1,tp_dst=5000 actions=NORMAL
+ priority=300,ip,nw_src=10.0.0.5 actions=drop
+ priority=100,ip,nw_dst=10.0.0.4 actions=drop
+ priority=100,ip,nw_dst=10.0.0.6 actions=drop
+ priority=0 actions=NORMAL
+--- s2 ---
+ priority=310,tcp,nw_src=10.0.0.5,nw_dst=10.0.0.1,tp_dst=5000 actions=NORMAL
+ priority=300,ip,nw_src=10.0.0.5 actions=drop
+ priority=100,ip,nw_dst=10.0.0.4 actions=drop
+ priority=100,ip,nw_dst=10.0.0.6 actions=drop
+ priority=0 actions=NORMAL
+--- s3 ---
+ priority=310,tcp,nw_src=10.0.0.5,nw_dst=10.0.0.1,tp_dst=5000 actions=NORMAL
+ priority=300,ip,nw_src=10.0.0.5 actions=drop
+ priority=100,ip,nw_dst=10.0.0.4 actions=drop
+ priority=100,ip,nw_dst=10.0.0.6 actions=drop
+ priority=0 actions=NORMAL
+
+======================================================================
+ 1. Default deny: unauthenticated hosts reach no protected service
+======================================================================
+
+h2$ python3 auth_client.py access --service both
+[BLOCKED] (no login) file: could not reach 10.0.0.4:9000
+[BLOCKED] (no login) db: could not reach 10.0.0.6:9100
+
+======================================================================
+ 2. Role rules: staff (alice) gets fileserver only, not dbserver
+======================================================================
+
+h2$ python3 auth_client.py login alice alice123 --service both --hold 0
+login -> {'status': 'ok', 'token': 'b2e85e24849ffabbb2e7898baf4bb604', 'timeout': 60, 'role': 'staff', 'granted': ['fileserver'], 'rate_kbps': 0}
+[ALLOWED] (after login) file: Welcome to the protected fileserver. | [04:15:05] fileserver served: GET report.txt
+[BLOCKED] (after login) db: could not reach 10.0.0.6:9100
+logout -> {'status': 'ok'}
+[BLOCKED] (after logout/expiry) file: could not reach 10.0.0.4:9000
+[BLOCKED] (after logout/expiry) db: could not reach 10.0.0.6:9100
+
+======================================================================
+ 3. Admin role gets both services
+======================================================================
+
+h7$ python3 auth_client.py login admin admin123 --service both --hold 0
+login -> {'status': 'ok', 'token': 'ac764e1dc51ecf8301c4ef45a7172868', 'timeout': 60, 'role': 'admin', 'granted': ['fileserver', 'dbserver'], 'rate_kbps': 0}
+[ALLOWED] (after login) file: Welcome to the protected fileserver. | [04:15:15] fileserver served: GET report.txt
+[ALLOWED] (after login) db: Welcome to the protected dbserver. | [04:15:15] dbserver served: GET report.txt
+logout -> {'status': 'ok'}
+[BLOCKED] (after logout/expiry) file: could not reach 10.0.0.4:9000
+[BLOCKED] (after logout/expiry) db: could not reach 10.0.0.6:9100
+
+======================================================================
+ 4. Restrict: guest is rate-limited by an OpenFlow meter (iperf, 4 s each)
+======================================================================
+
+   staff (alice, full speed)      :  1049.24 Mbit/s
+   guest (meter caps at 1 Mbit/s) :     0.46 Mbit/s
+
+Edge switch s2 rules (note in_port + MAC binding and meter on guest):
+ cookie=0x1002, hard_timeout=70, priority=200,tcp,in_port=2,dl_src=00:00:00:00:00:02,nw_src=10.0.0.2,nw_dst=10.0.0.4,tp_dst=9000 actions=NORMAL
+ cookie=0x1002, hard_timeout=70, priority=200,tcp,in_port=2,dl_src=00:00:00:00:00:02,nw_src=10.0.0.2,nw_dst=10.0.0.4,tp_dst=5001 actions=NORMAL
+ cookie=0x1003, hard_timeout=70, priority=200,tcp,in_port=3,dl_src=00:00:00:00:00:03,nw_src=10.0.0.3,nw_dst=10.0.0.4,tp_dst=9000 actions=meter:4100,NORMAL
+ cookie=0x1003, hard_timeout=70, priority=200,tcp,in_port=3,dl_src=00:00:00:00:00:03,nw_src=10.0.0.3,nw_dst=10.0.0.4,tp_dst=5001 actions=meter:4100,NORMAL
+OFPST_METER_CONFIG reply (OF1.3) (xid=0x2):
+meter=4100 kbps burst bands=
+type=drop rate=1000 burst_size=100
+
+======================================================================
+ 5. Anti-spoofing: h3 fakes alice's IP while alice is logged in
+======================================================================
+
+h3$ python3 auth_client.py access --src 10.0.0.2
+[BLOCKED] (spoofed src 10.0.0.2) file: could not reach 10.0.0.4:9000
+   -> blocked: the grant on s2 matches alice's switch port and MAC, not just her IP
+
+======================================================================
+ 6. Blacklisted host h5 is denied even with valid credentials
+======================================================================
+
+h5$ python3 auth_client.py login alice alice123 --hold 0
+login -> {'status': 'denied', 'reason': 'host is blacklisted'}
+[BLOCKED] (after failed login) file: could not reach 10.0.0.4:9000
+
+======================================================================
+ 7. Time-based rule: contractor carol may log in only 09:00-18:00
+======================================================================
+   current hour: 04:16
+
+h8$ python3 auth_client.py login carol carol123 --service db --hold 0
+login -> {'status': 'denied', 'reason': "role 'contractor' allowed only during hours [9, 18]"}
+[BLOCKED] (after failed login) db: could not reach 10.0.0.6:9100
+
+======================================================================
+ 8. Brute force: 3 wrong passwords -> SDN blocks h8 everywhere for 20 s
+======================================================================
+
+h8$ python3 auth_client.py login bob wrong --hold 0
+login -> {'status': 'fail', 'reason': 'invalid credentials', 'attempts_left': 2}
+[BLOCKED] (after failed login) file: could not reach 10.0.0.4:9000
+
+h8$ python3 auth_client.py login bob wrong --hold 0
+login -> {'status': 'fail', 'reason': 'invalid credentials', 'attempts_left': 1}
+[BLOCKED] (after failed login) file: could not reach 10.0.0.4:9000
+
+h8$ python3 auth_client.py login bob wrong --hold 0
+login -> {'status': 'denied', 'reason': 'too many failed attempts, host blocked for 20s'}
+[BLOCKED] (after failed login) file: could not reach 10.0.0.4:9000
+
+h8 ping auth server while blocked:
+2 packets transmitted, 0 received, 100% packet loss, time 1031ms
+
+ hard_timeout=20, priority=400,ip,nw_src=10.0.0.8 actions=drop
+ hard_timeout=20, priority=400,arp,arp_spa=10.0.0.8 actions=drop
+   waiting for the block to expire (hard_timeout)...
+
+h8$ python3 auth_client.py login bob bob123 --hold 0
+login -> {'status': 'ok', 'token': 'f64efc3d9175ee1a4f1b595638039544', 'timeout': 60, 'role': 'staff', 'granted': ['fileserver'], 'rate_kbps': 0}
+[ALLOWED] (after login) file: Welcome to the protected fileserver. | [04:16:40] fileserver served: GET report.txt
+logout -> {'status': 'ok'}
+[BLOCKED] (after logout/expiry) file: could not reach 10.0.0.4:9000
+
+======================================================================
+ 9. Admin kicks a user mid-session -> access revoked immediately
+======================================================================
+
+h7$ python3 admin_client.py admin admin123 sessions
+{
+  "status": "ok",
+  "sessions": [
+    {
+      "user": "alice",
+      "role": "staff",
+      "ip": "10.0.0.2",
+      "services": [
+        "fileserver"
+      ],
+      "expires_in": 56
+    },
+    {
+      "user": "admin",
+      "role": "admin",
+      "ip": "10.0.0.7",
+      "services": [
+        "fileserver",
+        "dbserver"
+      ],
+      "expires_in": 59
+    }
+  ],
+  "blocked": {}
+}
+
+h7$ python3 admin_client.py admin admin123 kick alice
+{
+  "status": "ok",
+  "kicked": 1
+}
+
+--- alice's client output ---
+login -> {'status': 'ok', 'token': '343e907007938b8331957850d5ec5fec', 'timeout': 60, 'role': 'staff', 'granted': ['fileserver'], 'rate_kbps': 0}
+[ALLOWED] (after login) file: Welcome to the protected fileserver. | [04:16:44] fileserver served: GET report.txt
+[BLOCKED] (t+10s) file: could not reach 10.0.0.4:9000
+heartbeat -> {'status': 'fail', 'reason': 'invalid or expired session'}
+logout -> {'status': 'fail', 'reason': 'invalid or expired session'}
+
+======================================================================
+ 10. Live policy reload: give guests the dbserver without restarting
+======================================================================
+
+h3$ python3 auth_client.py access --service db --label "guest logged in, before reload"
+[BLOCKED] (guest logged in, before reload) db: could not reach 10.0.0.6:9100
+
+h7$ python3 admin_client.py admin admin123 reload
+{
+  "status": "ok",
+  "updated": [
+    "guest"
+  ]
+}
+
+h3$ python3 auth_client.py access --service db --label "after reload: guests now allowed dbserver"
+[ALLOWED] (after reload: guests now allowed dbserver) db: Welcome to the protected dbserver. | [04:17:15] dbserver served: GET report.txt
+
+h7$ python3 admin_client.py admin admin123 reload
+{
+  "status": "ok",
+  "updated": [
+    "guest"
+  ]
+}
+
+h3$ python3 auth_client.py access --service db --label "after restoring the original policy"
+[BLOCKED] (after restoring the original policy) db: could not reach 10.0.0.6:9100
+
+======================================================================
+ 11. Auth server crash: access survives, session is restored after restart
+======================================================================
+   killing auth server (kill -9)...
+
+h2$ python3 auth_client.py access --label "alice logged in, auth server DOWN"
+[ALLOWED] (alice logged in, auth server DOWN) file: Welcome to the protected fileserver. | [04:17:39] fileserver served: GET report.txt
+   restarting auth server...
+
+h2$ python3 auth_client.py status
+{
+  "status": "ok",
+  "sessions": [
+    {
+      "user": "alice",
+      "ip": "10.0.0.2",
+      "expires_in": 52
+    }
+  ]
+}
+
+--- alice's client output ---
+login -> {'status': 'ok', 'token': 'e33e4b1c2183230cf3d1d103c6de6ad9', 'timeout': 60, 'role': 'staff', 'granted': ['fileserver'], 'rate_kbps': 0}
+[ALLOWED] (after login) file: Welcome to the protected fileserver. | [04:17:35] fileserver served: GET report.txt
+[ALLOWED] (t+10s) file: Welcome to the protected fileserver. | [04:17:45] fileserver served: GET report.txt
+[ALLOWED] (t+20s) file: Welcome to the protected fileserver. | [04:17:55] fileserver served: GET report.txt
+[ALLOWED] (t+30s) file: Welcome to the protected fileserver. | [04:18:05] fileserver served: GET report.txt
+logout -> {'status': 'ok'}
+   grant rules carry hard_timeout=70s and are refreshed by heartbeats,
+   so if the server stayed down they would expire on their own (fail closed).
+
+======================================================================
+ 12. Concurrency: alice (h2), guest (h3), admin (h7), bob (h8) at once
+======================================================================
+
+h2$ python3 auth_client.py status
+{
+  "status": "ok",
+  "sessions": [
+    {
+      "user": "admin",
+      "ip": "10.0.0.7",
+      "expires_in": 57
+    },
+    {
+      "user": "guest",
+      "ip": "10.0.0.3",
+      "expires_in": 57
+    },
+    {
+      "user": "bob",
+      "ip": "10.0.0.8",
+      "expires_in": 57
+    },
+    {
+      "user": "alice",
+      "ip": "10.0.0.2",
+      "expires_in": 57
+    }
+  ]
+}
+
+Flow tables while all four are logged in:
+--- s1 ---
+ priority=310,tcp,nw_src=10.0.0.5,nw_dst=10.0.0.1,tp_dst=5000 actions=NORMAL
+ cookie=0x100c, hard_timeout=70, priority=200,tcp,nw_src=10.0.0.7,nw_dst=10.0.0.4,tp_dst=9000 actions=NORMAL
+ cookie=0x100c, hard_timeout=70, priority=200,tcp,nw_src=10.0.0.7,nw_dst=10.0.0.4,tp_dst=5001 actions=NORMAL
+ cookie=0x100d, hard_timeout=70, priority=200,tcp,nw_src=10.0.0.3,nw_dst=10.0.0.4,tp_dst=9000 actions=NORMAL
+ cookie=0x100d, hard_timeout=70, priority=200,tcp,nw_src=10.0.0.3,nw_dst=10.0.0.4,tp_dst=5001 actions=NORMAL
+ cookie=0x100e, hard_timeout=70, priority=200,tcp,nw_src=10.0.0.8,nw_dst=10.0.0.4,tp_dst=9000 actions=NORMAL
+ cookie=0x100e, hard_timeout=70, priority=200,tcp,nw_src=10.0.0.8,nw_dst=10.0.0.4,tp_dst=5001 actions=NORMAL
+ cookie=0x100f, hard_timeout=70, priority=200,tcp,nw_src=10.0.0.2,nw_dst=10.0.0.4,tp_dst=9000 actions=NORMAL
+ cookie=0x100f, hard_timeout=70, priority=200,tcp,nw_src=10.0.0.2,nw_dst=10.0.0.4,tp_dst=5001 actions=NORMAL
+ cookie=0x100c, hard_timeout=70, priority=200,tcp,nw_src=10.0.0.7,nw_dst=10.0.0.6,tp_dst=9100 actions=NORMAL
+ cookie=0x100c, hard_timeout=70, priority=200,tcp,nw_src=10.0.0.7,nw_dst=10.0.0.6,tp_dst=5001 actions=NORMAL
+ priority=300,ip,nw_src=10.0.0.5 actions=drop
+ priority=100,ip,nw_dst=10.0.0.4 actions=drop
+ priority=100,ip,nw_dst=10.0.0.6 actions=drop
+ priority=0 actions=NORMAL
+--- s2 ---
+ priority=310,tcp,nw_src=10.0.0.5,nw_dst=10.0.0.1,tp_dst=5000 actions=NORMAL
+ priority=300,ip,nw_src=10.0.0.5 actions=drop
+ cookie=0x100c, hard_timeout=70, priority=200,tcp,in_port="s2-eth4",dl_src=00:00:00:00:00:07,nw_src=10.0.0.7,nw_dst=10.0.0.4,tp_dst=9000 actions=NORMAL
+ cookie=0x100c, hard_timeout=70, priority=200,tcp,in_port="s2-eth4",dl_src=00:00:00:00:00:07,nw_src=10.0.0.7,nw_dst=10.0.0.4,tp_dst=5001 actions=NORMAL
+ cookie=0x100d, hard_timeout=70, priority=200,tcp,in_port="s2-eth3",dl_src=00:00:00:00:00:03,nw_src=10.0.0.3,nw_dst=10.0.0.4,tp_dst=9000 actions=meter:4110,NORMAL
+ cookie=0x100d, hard_timeout=70, priority=200,tcp,in_port="s2-eth3",dl_src=00:00:00:00:00:03,nw_src=10.0.0.3,nw_dst=10.0.0.4,tp_dst=5001 actions=meter:4110,NORMAL
+ cookie=0x100f, hard_timeout=70, priority=200,tcp,in_port="s2-eth2",dl_src=00:00:00:00:00:02,nw_src=10.0.0.2,nw_dst=10.0.0.4,tp_dst=9000 actions=NORMAL
+ cookie=0x100f, hard_timeout=70, priority=200,tcp,in_port="s2-eth2",dl_src=00:00:00:00:00:02,nw_src=10.0.0.2,nw_dst=10.0.0.4,tp_dst=5001 actions=NORMAL
+ cookie=0x100c, hard_timeout=70, priority=200,tcp,in_port="s2-eth4",dl_src=00:00:00:00:00:07,nw_src=10.0.0.7,nw_dst=10.0.0.6,tp_dst=9100 actions=NORMAL
+ cookie=0x100c, hard_timeout=70, priority=200,tcp,in_port="s2-eth4",dl_src=00:00:00:00:00:07,nw_src=10.0.0.7,nw_dst=10.0.0.6,tp_dst=5001 actions=NORMAL
+ priority=100,ip,nw_dst=10.0.0.4 actions=drop
+ priority=100,ip,nw_dst=10.0.0.6 actions=drop
+ priority=0 actions=NORMAL
+--- s3 ---
+ priority=310,tcp,nw_src=10.0.0.5,nw_dst=10.0.0.1,tp_dst=5000 actions=NORMAL
+ priority=300,ip,nw_src=10.0.0.5 actions=drop
+ cookie=0x100e, hard_timeout=70, priority=200,tcp,in_port="s3-eth3",dl_src=00:00:00:00:00:08,nw_src=10.0.0.8,nw_dst=10.0.0.4,tp_dst=9000 actions=NORMAL
+ cookie=0x100e, hard_timeout=70, priority=200,tcp,in_port="s3-eth3",dl_src=00:00:00:00:00:08,nw_src=10.0.0.8,nw_dst=10.0.0.4,tp_dst=5001 actions=NORMAL
+ priority=100,ip,nw_dst=10.0.0.4 actions=drop
+ priority=100,ip,nw_dst=10.0.0.6 actions=drop
+ priority=0 actions=NORMAL
+
+--- h2 ---
+login -> {'status': 'ok', 'token': '65f08edc0c8809223d2facbef457f9e2', 'timeout': 60, 'role': 'staff', 'granted': ['fileserver'], 'rate_kbps': 0}
+[ALLOWED] (after login) file: Welcome to the protected fileserver. | [04:18:10] fileserver served: GET report.txt
+[BLOCKED] (after login) db: could not reach 10.0.0.6:9100
+logout -> {'status': 'ok'}
+[BLOCKED] (after logout/expiry) file: could not reach 10.0.0.4:9000
+
+--- h3 ---
+login -> {'status': 'ok', 'token': 'cdac332f54964f3f634870e9db5a966f', 'timeout': 60, 'role': 'guest', 'granted': ['fileserver'], 'rate_kbps': 1000}
+[ALLOWED] (after login) file: Welcome to the protected fileserver. | [04:18:10] fileserver served: GET report.txt
+[BLOCKED] (after login) db: could not reach 10.0.0.6:9100
+logout -> {'status': 'ok'}
+[BLOCKED] (after logout/expiry) file: could not reach 10.0.0.4:9000
+
+--- h7 ---
+login -> {'status': 'ok', 'token': '64c385d6824c2fcf4c13b8b9c2e1e433', 'timeout': 60, 'role': 'admin', 'granted': ['fileserver', 'dbserver'], 'rate_kbps': 0}
+[ALLOWED] (after login) file: Welcome to the protected fileserver. | [04:18:10] fileserver served: GET report.txt
+[ALLOWED] (after login) db: Welcome to the protected dbserver. | [04:18:10] dbserver served: GET report.txt
+logout -> {'status': 'ok'}
+[BLOCKED] (after logout/expiry) file: could not reach 10.0.0.4:9000
+[BLOCKED] (after logout/expiry) db: could not reach 10.0.0.6:9100
+
+--- h8 ---
+login -> {'status': 'ok', 'token': 'ffd448021e7d514c03c1b8de10d67635', 'timeout': 60, 'role': 'staff', 'granted': ['fileserver'], 'rate_kbps': 0}
+[ALLOWED] (after login) file: Welcome to the protected fileserver. | [04:18:10] fileserver served: GET report.txt
+[BLOCKED] (after login) db: could not reach 10.0.0.6:9100
+logout -> {'status': 'ok'}
+[BLOCKED] (after logout/expiry) file: could not reach 10.0.0.4:9000
+
+======================================================================
+ Done. Logs: logs/auth.log, logs/access.log
+======================================================================
+Timeout demo (~70 s):
+  mininet> h2 cd PATH && python3 auth_client.py login alice alice123 --no-heartbeat --hold 70
+*** Stopping 0 controllers
+
+*** Stopping 10 links
+..........
+*** Stopping 3 switches
+s1 s2 s3 
+*** Stopping 8 hosts
+h1 h2 h3 h4 h5 h6 h7 h8 
+*** Done
+exit 0
